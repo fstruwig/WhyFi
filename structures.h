@@ -69,6 +69,7 @@ struct RxControl {
   unsigned: 12;
 };
 
+
 struct LenSeq {
   uint16_t length;
   uint16_t seq;
@@ -88,6 +89,21 @@ struct sniffer_buf2 {
   uint16_t cnt;
   uint16_t len;
 };
+
+
+
+
+#define WHYPHI_IS_11N(rxctrl)  (rxctrl.sigmode != 0)
+
+
+
+
+
+
+
+
+
+
 
 struct clientinfo parse_data(uint8_t *frame, uint16_t framelen, signed rssi, unsigned channel)
 {
@@ -139,7 +155,7 @@ struct clientinfo parse_data(uint8_t *frame, uint16_t framelen, signed rssi, uns
   memcpy(ci.bssid, bssid, ETH_MAC_LEN);
   memcpy(ci.ap, ap, ETH_MAC_LEN);
 
-  ci.seq_n = frame[23] * 0xFF + (frame[22] & 0xF0);
+  ci.seq_n = (frame[23] << 8) + (frame[22] & 0xF0);
   return ci;
 }
 

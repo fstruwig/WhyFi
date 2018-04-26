@@ -24,15 +24,26 @@ void on_sniff_enter();
 void on_sniff();
 void on_sniff_exit();
 void on_captive();
+void on_menu_enter();
+void on_menu();
+void on_ping_enter();
+void on_ping();
 
 State state_sniffing(on_sniff_enter, on_sniff, on_sniff_exit);
 State state_captive(NULL, on_captive, NULL);
+State state_menu(on_menu_enter, on_menu, NULL);
+State state_ping(on_ping_enter, on_ping, NULL);
 
 Fsm fsm(&state_sniffing);
+
+bool _next_btn_pressed = false;
+bool _select_btn_pressed = false;
 
 #define EVT_START_SNIFF       1
 #define EVT_CAPTIVE_PRESSED   2
 #define EVT_CAPTIVE_DONE      3
+#define EVT_DO_PING           4
+#define EVT_MENU              5
 
 void on_sniff_enter()
 {
@@ -50,6 +61,8 @@ void on_sniff()
     last_refresh = current_time;
     show_sniffing();
   }
+  if(_next_btn_pressed || _select_btn_pressed)
+    fsm.trigger(EVT_MENU);
 }
 
 void on_sniff_exit()
@@ -65,8 +78,7 @@ void on_captive()
   display.print("Enter mobile AP",1);
   display.print("to configure...",2);
   start_captive_ap(); 
-  fsm.trigger(EVT_CAPTIVE_DONE);
-  Serial.println(__FUNCTION__); 
+  fsm.trigger(EVT_CAPTIVE_DONE); 
 }
 
 void setup() {
@@ -86,8 +98,12 @@ void setup() {
   pinMode(BTN_NEXT_PIN,INPUT_PULLUP);
   pinMode(BTN_SELECT_PIN,INPUT_PULLUP);
 
-  fsm.add_transition(&state_sniffing, &state_captive, EVT_CAPTIVE_PRESSED, NULL);
+  fsm.add_transition(&state_sniffing, &state_menu, EVT_MENU, NULL);
+  fsm.add_transition(&state_menu, &state_sniffing, EVT_START_SNIFF, NULL);
+  fsm.add_transition(&state_menu, &state_captive, EVT_CAPTIVE_PRESSED, NULL);
   fsm.add_transition(&state_captive,  &state_sniffing, EVT_CAPTIVE_DONE, NULL);
+  fsm.add_transition(&state_menu, &state_ping, EVT_DO_PING, NULL);
+  fsm.add_transition(&state_ping, &state_menu, EVT_MENU, NULL);
 }
 
 void start_sniffing()
@@ -99,37 +115,39 @@ void start_sniffing()
   wifi_promiscuous_enable(enable);
 }
 
-
 void loop() {
-  bool next_btn_pressed = false;
-  bool select_btn_pressed = false;
-  
-  delay(100);
+  delay(250);
   ESP.wdtFeed();
+
   
-  next_btn_pressed = digitalRead(BTN_NEXT_PIN) == LOW;
-  select_btn_pressed = digitalRead(BTN_SELECT_PIN) == LOW;
-  
-  fsm.trigger(EVT_START_SNIFF);
+  _next_btn_pressed = digitalRead(BTN_NEXT_PIN) == LOW;
+  _select_btn_pressed = digitalRead(BTN_SELECT_PIN) == LOW;
+    
   fsm.run_machine();
-  
-  if(next_btn_pressed || select_btn_pressed)
-  {
-    Serial.println("Button Press Detected");
-    fsm.trigger(EVT_CAPTIVE_PRESSED);
-  }
 }
 
 void show_sniffing()
 {
+  int count;
+  
   display.clear();
   display.print("-MAC-|-KBS-|-MB-", (uint8_t) 0);
-  for (int u = 0; u < clients_known_count; u++)
+
+  if (clients_known_count > 3)
+    count = 3;
+  else
+    count = clients_known_count;
+    
+  for (int u = 0; u < count; u++)
   {
-    print_client(clients_known[u]);
     display_client(clients_known[u], u);
   }
-  Serial.println();
+  for (int u = 0; u < clients_known_count; u++)
+  {
+    //print_client(clients_known[u]);
+  }
+  //Serial.println("==REFRESHED==");
+  //Serial.printf("Num Packets:%d\n", _num_packets); 
 }
 
 
@@ -160,10 +178,9 @@ void display_client(clientinfo ci, int line)
 }
 
 
-WiFiManager wifiManager;
-
 void start_captive_ap()
 {
+  WiFiManager wifiManager;
   char human[MAX_CLIENTS_TRACKED][EEPROM_MAX_NAME_LEN];
   char placeholders[MAX_CLIENTS_TRACKED][18];
   char paramIds[MAX_CLIENTS_TRACKED][4];
@@ -193,9 +210,6 @@ void start_captive_ap()
 
   //if you get here you have connected to the WiFi
   Serial.println("We're happy with the connection.  Resuming sniffing.");
-
-  //Close WifiConnection and free up explicitly
-  wifiManager.~WiFiManager();
 }
 
 void resetCb()
@@ -203,14 +217,14 @@ void resetCb()
   eeprom_clear();
 }
 
-void saveConfigCb()
+void saveConfigCb(WiFiManager *wifiManager)
 {
   char buf[13];
   Serial.println("Saving configuration");
 
   //save AP info
-  String ssid = wifiManager.getSSID();
-  String pass = wifiManager.getPassword();
+  String ssid = wifiManager->getSSID();
+  String pass = wifiManager->getPassword();
   assert(ssid != NULL);
   assert(pass != NULL);
 
@@ -229,7 +243,7 @@ void saveConfigCb()
 
   //save MAC Name pairs
   int count;
-  WiFiManagerParameter** params = wifiManager.getParams(&count);
+  WiFiManagerParameter** params = wifiManager->getParams(&count);
 
   Serial.print("Received parameters:");
   Serial.println(count);
@@ -239,9 +253,83 @@ void saveConfigCb()
     //TODO: The order of things may get thrown out if the client list is accessed during the config period.
     //must lock it down.  Assuming that the list has stayed the same.
     whyfi_eeprom_add_pair(clients_known[i].station, params[i]->getValue());
-    params[i]->getID();
   }
   eeprom_write();
 }
+
+int _menu_pos;
+
+struct menu_mapping_t
+{
+  char description[32];
+  int  event_to_trigger;
+};
+
+menu_mapping_t menu_map[] =
+{
+  {"Ping test",EVT_DO_PING},
+  {"Configure",EVT_CAPTIVE_PRESSED},
+  {"Sniff",EVT_START_SNIFF}
+};
+
+void display_menu()
+{
+  display.clear();
+  display.print("[*]", _menu_pos);
+  //TODO: Handle case that menu is more than 3 lines
+  for(int i=0; i< sizeof(menu_map)/sizeof(menu_map[0]); i++)
+  {
+    display.print(menu_map[i].description, i, 4);
+  }
+}
+
+void on_menu_enter()
+{
+  //initialize menu page
+  _menu_pos = 0;
+  display_menu();
+}
+
+void on_menu()
+{
+  if(_next_btn_pressed)
+  {
+    _menu_pos++;
+    if(_menu_pos == sizeof(menu_map)/sizeof(menu_map[0]))
+      _menu_pos = 0;
+   
+    Serial.printf("Changed menu pos: %d", _menu_pos);   
+    display_menu();
+  }
+  else if (_select_btn_pressed)
+  {
+    fsm.trigger(menu_map[_menu_pos].event_to_trigger);
+  } 
+}
+
+void on_ping_enter()
+{
+  display.clear();
+  display.print("Starting ping...");
+}
+
+void on_ping()
+{
+  static int spin=0;
+
+  spin++;
+
+  switch(spin)
+  {
+    case 0: display.print("|",2);break;
+    case 1: display.print("/",2);break;
+    case 2: display.print("-",2);break;
+    case 3: display.print("\\",2); spin=0; break;
+  }
+
+  if(_next_btn_pressed || _select_btn_pressed)
+    fsm.trigger(EVT_MENU);
+}
+
 
 

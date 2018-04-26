@@ -148,11 +148,12 @@ bool whyfi_eeprom_add_pair(const uint8_t *station /*[ETH_MAC_LEN]*/, const char 
 {
   //check if the station is already in the list
   int index = whyfi_eeprom_find_station(station);
+  uint8_t empty_mac[] = {0,0,0,0,0,0};
 
   if(index < 0)
   {
     //skip if entry unlabeled
-    if(szvalue[0] == '\0')
+    if(szvalue[0] == '\0' || !memcmp(station,empty_mac,ETH_MAC_LEN))
     {      
       Serial.println("Skipping empty");
       return false;
@@ -184,7 +185,6 @@ bool whyfi_eeprom_add_pair(const uint8_t *station /*[ETH_MAC_LEN]*/, const char 
       //overwrite existing entry (update description)
       Serial.println("Rename existing pair");
       snprintf(_eeprom_whyfi.mac_names[index].szname, EEPROM_MAX_NAME_LEN, szvalue);
-      _eeprom_whyfi.mac_name_pos++;
     }
   }
   
